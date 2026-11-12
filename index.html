@@ -8,9 +8,18 @@
     <meta name="theme-color" content="#020617">
     <title>Secure Executive Hub</title>
     
+    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     
+    <!-- 모바일 환경 Drag & Drop 터치 지원 폴리필 -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/mobile-drag-drop@2.3.0-rc.2/default.css">
+    <script src="https://cdn.jsdelivr.net/npm/mobile-drag-drop@2.3.0-rc.2/index.min.js"></script>
+    <script>
+        MobileDragDrop.polyfill({ holdToDrag: 300 });
+        window.addEventListener('touchmove', function() {}, {passive: false});
+    </script>
+
     <style>
         body { font-family: 'Inter', 'Malgun Gothic', sans-serif; -webkit-tap-highlight-color: transparent; background-color: #020617; overscroll-behavior-y: none; }
         ::-webkit-scrollbar { display: none; }
@@ -28,6 +37,9 @@
         }
         .custom-checkbox:checked::before { transform: scale(1); }
         .custom-checkbox:checked { background-color: #10b981; border-color: #10b981; }
+        
+        /* 드래그 앤 드롭 타겟 표시 */
+        .droppable-input:focus, .droppable-input.drag-over { border-bottom: 2px solid #3b82f6 !important; background-color: rgba(59, 130, 246, 0.1); }
         
         :root { --cal-cell: #0f172a; --cal-border: #1e293b; --cal-red: #f87171; --cal-today-bg: #1e293b; --cal-today-border: #3b82f6; }
         #view-calendar .cal-nav-buttons { display: flex; justify-content: space-between; margin-bottom: 15px; }
@@ -62,8 +74,7 @@
         #view-calendar .week-table th { width: calc((100% - 60px) / 7); }
         #view-calendar .week-cell { cursor: pointer; height: 35px; font-size: 0.75rem; color: #94a3b8; }
         #view-calendar .week-cell.today-col { background: #1e293b; }
-        #view-calendar input[type="text"].cal-input { width: 100%; border: none; outline: none; background: transparent; color: #f8fafc; font-family: inherit; font-size: 0.85rem; padding: 4px 0; }
-        #view-calendar input[type="text"].cal-input:focus { border-bottom: 1px solid #3b82f6; }
+        #view-calendar input[type="text"].cal-input { width: 100%; border: none; outline: none; background: transparent; color: #f8fafc; font-family: inherit; font-size: 0.85rem; padding: 4px 0; transition: background 0.2s; }
         
         @media (max-width: 768px) { #view-calendar .grid-year { grid-template-columns: repeat(2, 1fr); } #view-calendar .day-cell { min-height: 70px; } }
         @media (max-width: 480px) { #view-calendar .grid-year { grid-template-columns: 1fr; } }
@@ -227,7 +238,7 @@
         </div>
     </div>
 
-    <!-- Firebase Scripts (v11 Modular) & Logic -->
+    <!-- Firebase Scripts & Logic -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
@@ -262,6 +273,19 @@
         
         window.calState = { view: 'month', selectedDate: new Date(), diaryData: {} };
         const holidays = ["01-01", "02-16", "02-17", "02-18", "03-01", "05-05", "05-24", "06-06", "08-15", "09-24", "09-25", "09-26", "10-03", "10-09", "12-25"];
+
+        // ==========================================
+        // 유틸리티 함수
+        // ==========================================
+        function genId() { return Date.now().toString(36) + Math.random().toString(36).substring(2, 7); }
+        function escape(s) { return (s || '').replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+        function addDays(d, days) { let r = new Date(d); r.setDate(r.getDate() + days); return r; }
+        function addMonths(d, m) { let r = new Date(d); r.setMonth(r.getMonth() + m); return r; }
+        function fmtDate(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+        function fmtMMDD(d) { return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+        function isHol(d) { return holidays.includes(fmtMMDD(d)); }
+        function isSun(d) { return d.getDay() === 0; }
+        function isTod(d) { const t = new Date(); return d.getFullYear() === t.getFullYear() && d.getMonth() === t.getMonth() && d.getDate() === t.getDate(); }
 
         // ==========================================
         // 인증 로직
@@ -307,7 +331,7 @@
                 topics = []; snapshot.forEach(d => topics.push({ id: d.id, ...d.data() }));
                 topics.sort((a, b) => b.timestamp - a.timestamp);
                 if(currentTab === 'projects') renderProjects();
-                if(currentTab === 'calendar') window.renderCalendar(); // WBS 연동(Checkpoints) 갱신
+                if(currentTab === 'calendar') window.renderCalendar();
             });
         }
 
@@ -360,9 +384,13 @@
             const db = window.calState.diaryData;
             
             for(const [date, data] of Object.entries(db)) {
-                // 일기 검색
                 if(data.memo && data.memo.toLowerCase().includes(query)) results.push({ date, type: '일기', text: data.memo });
-                // 시간별 내용 검색
+                // Day Todo 목록 검색
+                if(data.todos) {
+                    data.todos.forEach(t => {
+                        if(t.text.toLowerCase().includes(query)) results.push({ date, type: '할 일', text: t.text });
+                    });
+                }
                 for(let i=0; i<24; i++) {
                     const hr = String(i).padStart(2,'0');
                     if(data[hr]) {
@@ -396,19 +424,10 @@
         };
 
         // ==========================================
-        // 🌟 VIEW 1: 스마트 캘린더 & 일기 (Day 뷰)
+        // 🌟 VIEW 1: 스마트 캘린더 (Day 뷰 특화)
         // ==========================================
         const calContent = document.getElementById('calendar-content');
-        function escape(s) { return (s || '').replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
-        function addDays(d, days) { let r = new Date(d); r.setDate(r.getDate() + days); return r; }
-        function addMonths(d, m) { let r = new Date(d); r.setMonth(r.getMonth() + m); return r; }
-        function fmtDate(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
-        function fmtMMDD(d) { return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
-        function isHol(d) { return holidays.includes(fmtMMDD(d)); }
-        function isSun(d) { return d.getDay() === 0; }
-        function isTod(d) { const t = new Date(); return d.getFullYear() === t.getFullYear() && d.getMonth() === t.getMonth() && d.getDate() === t.getDate(); }
 
-        // WBS 납기일을 캘린더 체크포인트로 추출하는 함수
         function getWBSCheckpoints(dateStr) {
             let checkpoints = [];
             topics.forEach(large => {
@@ -460,6 +479,54 @@
             set(ref(dbRealtime, `myDiary/${userId}`), db).catch(e => console.error(e));
         };
 
+        // --- Day 뷰 오늘의 할일 (Drag & Drop용) 로직 ---
+        window.addDayTodo = (dateStr) => {
+            const input = document.getElementById('day-todo-input');
+            const val = input.value.trim();
+            if (!val || !userId) return;
+            const db = window.calState.diaryData;
+            if (!db[dateStr]) db[dateStr] = {};
+            if (!db[dateStr].todos) db[dateStr].todos = [];
+            db[dateStr].todos.push({ id: genId(), text: val, checked: false });
+            input.value = '';
+            set(ref(dbRealtime, `myDiary/${userId}`), db).catch(e => console.error(e));
+        };
+        window.toggleDayTodo = (dateStr, id, stat) => {
+            if(!userId) return; const db = window.calState.diaryData;
+            const t = db[dateStr].todos.find(x => x.id === id);
+            if (t) { t.checked = !stat; set(ref(dbRealtime, `myDiary/${userId}`), db).catch(e => console.error(e)); }
+        };
+        window.deleteDayTodo = (dateStr, id) => {
+            if(!userId) return; const db = window.calState.diaryData;
+            db[dateStr].todos = db[dateStr].todos.filter(x => x.id !== id);
+            set(ref(dbRealtime, `myDiary/${userId}`), db).catch(e => console.error(e));
+        };
+
+        // 드래그 앤 드롭 이벤트 핸들러
+        window.handleDragStart = (e, text) => {
+            e.dataTransfer.setData('text/plain', text);
+            e.dataTransfer.effectAllowed = 'copy';
+        };
+        window.handleDragOver = (e) => {
+            e.preventDefault();
+            e.target.classList.add('drag-over');
+        };
+        window.handleDragLeave = (e) => {
+            e.target.classList.remove('drag-over');
+        };
+        window.handleDrop = (e, dateStr, hr, field) => {
+            e.preventDefault();
+            e.target.classList.remove('drag-over');
+            const text = e.dataTransfer.getData('text/plain');
+            if (text) {
+                // 기존 내용이 있으면 줄바꿈으로 추가, 없으면 바로 입력
+                const currentVal = e.target.value.trim();
+                const newVal = currentVal ? currentVal + ", " + text : text;
+                e.target.value = newVal;
+                window.updateCalData(dateStr, hr, field, newVal);
+            }
+        };
+
         window.renderCalendar = () => {
             const s = window.calState;
             if (s.view === 'year') renderYearView(); else if (s.view === 'month') renderMonthView();
@@ -495,14 +562,13 @@
                 let cd = new Date(y, m, d); let ds = fmtDate(cd);
                 let red = isSun(cd) || isHol(cd) ? 'text-red' : ''; let tod = isTod(cd) ? 'today' : '';
                 
-                // WBS 체크포인트(🚩) 연동
                 let chks = getWBSCheckpoints(ds);
                 let chkHtml = chks.map(c => `<div class="text-[10px] text-teal-400 font-bold truncate">🚩 ${escape(c)}</div>`).join('');
                 
                 let sum = '';
                 if(window.calState.diaryData[ds]) {
                     let plans = [];
-                    for(let h in window.calState.diaryData[ds]) { if(h!=='memo' && window.calState.diaryData[ds][h].plan) plans.push(window.calState.diaryData[ds][h].plan); }
+                    for(let h in window.calState.diaryData[ds]) { if(h!=='memo' && h!=='todos' && window.calState.diaryData[ds][h].plan) plans.push(window.calState.diaryData[ds][h].plan); }
                     sum = plans.slice(0, 2).join('<br>') + (plans.length > 2 ? '<br>...' : '');
                 }
                 html += `<div class="day-cell ${tod}" onclick="window.setViewCalendar('day', '${ds}')"><div class="day-number ${red}">${d}</div><div class="data-indicator">${sum}</div><div class="mt-auto pt-1">${chkHtml}</div></div>`;
@@ -539,7 +605,6 @@
             calContent.innerHTML = html + `</tbody></table></div>`;
         }
 
-        // 🌟 Day View (시간별 계획 + 통 일기장 + WBS 마일스톤) 
         function renderDayView() {
             const dStr = fmtDate(window.calState.selectedDate); const cd = window.calState.selectedDate;
             const red = isSun(cd) || isHol(cd) ? 'text-red' : '';
@@ -551,33 +616,63 @@
             let chks = getWBSCheckpoints(dStr);
             if(chks.length > 0) {
                 html += `<div class="mb-4 p-3 bg-slate-900 border-l-4 border-teal-500 rounded-lg shadow-sm">
-                            <div class="text-xs font-bold text-teal-400 mb-1.5 flex items-center gap-1">🚩 오늘의 프로젝트 WBS 마일스톤</div>
+                            <div class="text-xs font-bold text-teal-400 mb-1.5 flex items-center gap-1">🚩 오늘의 WBS 마감 항목</div>
                             ${chks.map(c => `<div class="text-sm text-slate-300 ml-4 mb-0.5">• ${escape(c)}</div>`).join('')}
                          </div>`;
             }
 
-            // 3. 플렉스 레이아웃 (좌: 시간표 / 우: 통 일기장)
+            // 3. ✨ NEW: 오늘의 할 일 (Day Todo) 리스트 추가 (드래그 지원)
+            if (!window.calState.diaryData[dStr]) window.calState.diaryData[dStr] = {};
+            const dayTodos = window.calState.diaryData[dStr].todos || [];
+            
+            html += `<div class="mb-5 bg-slate-900/60 border border-slate-700/80 rounded-xl p-4">
+                        <div class="flex items-center justify-between mb-3">
+                            <h3 class="text-sm font-bold text-indigo-400 flex items-center gap-1.5">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path></svg>
+                                오늘의 할 일 (아래 시간표로 Drag & Drop 하세요)
+                            </h3>
+                        </div>
+                        <div class="flex gap-2 mb-3">
+                            <input type="text" id="day-todo-input" placeholder="오늘 해야 할 일 입력..." class="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-500" onkeypress="if(event.key==='Enter') window.addDayTodo('${dStr}')">
+                            <button onclick="window.addDayTodo('${dStr}')" class="bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg px-4 py-2 text-sm font-bold transition-colors">추가</button>
+                        </div>
+                        <div class="space-y-2">`;
+            
+            if(dayTodos.length === 0) {
+                html += `<div class="text-xs text-slate-500 italic py-2 text-center border border-dashed border-slate-700 rounded-lg">등록된 할 일이 없습니다.</div>`;
+            } else {
+                dayTodos.forEach(t => {
+                    html += `
+                        <div draggable="true" ondragstart="window.handleDragStart(event, '${escape(t.text)}')" class="flex items-center justify-between bg-slate-800/50 p-2.5 rounded-lg border border-slate-700 cursor-grab hover:bg-slate-800 transition-colors ${t.checked?'opacity-50':''}">
+                            <div class="flex items-center gap-3 w-full">
+                                <span class="text-slate-500 cursor-grab px-1 text-lg">⋮⋮</span>
+                                <input type="checkbox" class="custom-checkbox shrink-0" ${t.checked?'checked':''} onchange="window.toggleDayTodo('${dStr}', '${t.id}', ${t.checked})">
+                                <span class="text-sm select-none ${t.checked?'line-through text-slate-500':''}">${escape(t.text)}</span>
+                            </div>
+                            <button onclick="window.deleteDayTodo('${dStr}', '${t.id}')" class="text-slate-500 hover:text-red-400 p-1 shrink-0"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
+                        </div>`;
+                });
+            }
+            html += `</div></div>`;
+
+            // 4. 플렉스 레이아웃 (좌: 시간표(드롭 타겟) / 우: 통 일기장)
             html += `<div class="flex flex-col lg:flex-row gap-4 h-full">`;
             
-            // 좌측: 시간별 테이블
-            if (!window.calState.diaryData[dStr]) window.calState.diaryData[dStr] = {};
             html += `<div class="table-wrapper flex-[7]"><table><thead><tr><th class="time-col">시간</th><th>계획 (Plan)</th><th>진행 (Do)</th><th>리뷰 (See)</th></tr></thead><tbody>`;
             for (let i = 0; i < 24; i++) {
                 const hr = String(i).padStart(2, '0');
                 const row = window.calState.diaryData[dStr][hr] || { plan: '', progress: '', review: '' };
                 html += `<tr><td class="time-col">${hr}:00</td>
-                        <td><input type="text" class="cal-input" value="${row.plan}" onchange="window.updateCalData('${dStr}', '${hr}', 'plan', this.value)"></td>
-                        <td><input type="text" class="cal-input" value="${row.progress}" onchange="window.updateCalData('${dStr}', '${hr}', 'progress', this.value)"></td>
-                        <td><input type="text" class="cal-input" value="${row.review}" onchange="window.updateCalData('${dStr}', '${hr}', 'review', this.value)"></td></tr>`;
+                        <td><input type="text" class="cal-input droppable-input" value="${escape(row.plan)}" onchange="window.updateCalData('${dStr}', '${hr}', 'plan', this.value)" ondragover="window.handleDragOver(event)" ondragleave="window.handleDragLeave(event)" ondrop="window.handleDrop(event, '${dStr}', '${hr}', 'plan')"></td>
+                        <td><input type="text" class="cal-input droppable-input" value="${escape(row.progress)}" onchange="window.updateCalData('${dStr}', '${hr}', 'progress', this.value)" ondragover="window.handleDragOver(event)" ondragleave="window.handleDragLeave(event)" ondrop="window.handleDrop(event, '${dStr}', '${hr}', 'progress')"></td>
+                        <td><input type="text" class="cal-input droppable-input" value="${escape(row.review)}" onchange="window.updateCalData('${dStr}', '${hr}', 'review', this.value)" ondragover="window.handleDragOver(event)" ondragleave="window.handleDragLeave(event)" ondrop="window.handleDrop(event, '${dStr}', '${hr}', 'review')"></td></tr>`;
             }
             html += `</tbody></table></div>`;
 
-            // 우측: 오늘의 일기 (시간 구분 없는 통 메모)
             const memoText = window.calState.diaryData[dStr].memo || '';
             html += `<div class="flex-[3] flex flex-col bg-slate-900/80 border border-slate-700 rounded-xl p-4 min-h-[300px] lg:min-h-full">
                         <h3 class="text-sm font-bold text-blue-400 mb-3 flex items-center gap-2">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg> 
-                            오늘의 일기
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg> 오늘의 일기
                         </h3>
                         <textarea id="daily-memo" class="flex-1 w-full bg-transparent border-none text-sm text-slate-200 resize-none focus:outline-none leading-relaxed" placeholder="시간에 구애받지 않고 오늘 하루를 자유롭게 기록하세요..." onchange="window.updateDailyMemo('${dStr}', this.value)">${escape(memoText)}</textarea>
                      </div>`;
@@ -621,9 +716,8 @@
         }
 
         // ==========================================
-        // VIEW 3: 프로젝트 WBS (4단계 달성률 Roll-up 완벽 적용)
+        // VIEW 3: 프로젝트 WBS 
         // ==========================================
-        function genId() { return Date.now().toString(36) + Math.random().toString(36).substring(2, 7); }
         const calcStat = (arr) => { const tot = arr.length; const cmp = arr.filter(a=>a.completed).length; return { tot, cmp, pct: tot===0?0:Math.round((cmp/tot)*100) }; };
         const getSmallStats = (sm) => calcStat(sm.actions || []);
         const getMediumStats = (med) => { let t=0, c=0; (med.smallTopics||[]).forEach(sm => { const s = getSmallStats(sm); t+=s.tot; c+=s.cmp; }); return { tot:t, cmp:c, pct:t===0?0:Math.round((c/t)*100) }; };
@@ -686,7 +780,6 @@
         
         window.toggleAccordion = (id) => { collapsedMap[id] = !collapsedMap[id]; renderProjects(); };
 
-        // --- 수정 모달 (항목 및 납기 수정) ---
         window.openEditModal = (type, lId, mId=null, sId=null, aId=null) => {
             currentEditTarget = { type, lId, mId, sId, aId }; const t = topics.find(x => x.id === lId); let target = null;
             if(type==='large') target = t; else if(type==='medium') target = t.mediumTopics.find(m=>m.id===mId);
@@ -702,8 +795,7 @@
             if(!userId || !currentEditTarget) return;
             const title = document.getElementById('edit-title-input').value.trim(); const dueDate = document.getElementById('edit-date-input').value;
             if(!title) return;
-            const { type, lId, mId, sId, aId } = currentEditTarget; const t = topics.find(x => x.id === lId);
-            let target = null;
+            const { type, lId, mId, sId, aId } = currentEditTarget; const t = topics.find(x => x.id === lId); let target = null;
             if(type==='large') target = t; else if(type==='medium') target = t.mediumTopics.find(m=>m.id===mId);
             else if(type==='small') target = t.mediumTopics.find(m=>m.id===mId).smallTopics.find(s=>s.id===sId);
             else if(type==='action') target = t.mediumTopics.find(m=>m.id===mId).smallTopics.find(s=>s.id===sId).actions.find(a=>a.id===aId);
@@ -735,13 +827,10 @@
                         (sm.actions||[]).forEach(act => {
                             html += `<div class="flex items-center gap-2 bg-slate-900 p-2 rounded ${act.completed?'opacity-50':''}"><input type="checkbox" class="custom-checkbox w-3.5 h-3.5 shrink-0" ${act.completed?'checked':''} onchange="window.toggleActionItem('${large.id}','${med.id}','${sm.id}','${act.id}')"><div class="flex flex-col"><span class="text-xs ${act.completed?'line-through':''}">${escape(act.title)}</span><span class="text-[9px] text-slate-500">납기: ${act.dueDate||'미정'}</span></div><div class="ml-auto flex gap-1"><button onclick="window.openEditModal('action','${large.id}','${med.id}','${sm.id}','${act.id}')" class="text-slate-500 hover:text-blue-400"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg></button><button onclick="window.deleteActionItem('${large.id}','${med.id}','${sm.id}','${act.id}')" class="text-slate-500 hover:text-red-400"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M6 18L18 6M6 6l12 12"></path></svg></button></div></div>`;
                         });
-                        
                         html += `<div class="flex gap-1 mt-2"><input type="text" id="act-input-${sm.id}" placeholder="액션 입력" class="flex-1 bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs"><input type="date" id="act-date-${sm.id}" class="bg-slate-900 border border-slate-700 rounded px-1 py-1.5 text-[10px] w-24"><button onclick="window.addActionItem('${large.id}','${med.id}','${sm.id}')" class="bg-emerald-600 text-white rounded px-2 text-[11px] font-bold">+ 액션</button></div></div></div>`;
                     });
-                    
                     html += `<div class="flex gap-1 mt-3"><input type="text" id="sm-input-${med.id}" placeholder="소주제 입력" class="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs"><input type="date" id="sm-date-${med.id}" class="bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-[11px] w-28"><button onclick="window.addSmallTopic('${large.id}','${med.id}')" class="bg-teal-600 text-white rounded-lg px-3 py-1.5 text-xs font-bold">+ 소주제</button></div></div></div>`;
                 });
-                
                 html += `<div class="flex gap-2 pt-2"><input type="text" id="med-input-${large.id}" placeholder="중간주제 입력" class="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm"><input type="date" id="med-date-${large.id}" class="bg-slate-950 border border-slate-700 rounded-xl px-2 py-2 text-xs w-32"><button onclick="window.addMediumTopic('${large.id}')" class="bg-indigo-600 text-white rounded-xl px-4 py-2 text-sm font-bold">+ 중간주제</button></div></div></div>`;
                 cont.innerHTML += html;
             });
